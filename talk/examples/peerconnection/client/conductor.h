@@ -46,6 +46,9 @@ class VideoCaptureModule;
 
 namespace cricket {
 class VideoRenderer;
+class VideoCapturer;
+class DummyVideoRenderer;
+class DummyVideoCapturer;
 }  // namespace cricket
 
 class Conductor
