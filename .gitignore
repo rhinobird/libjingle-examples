@@ -1,0 +1,8 @@
+build/
+net/
+out/
+talk/*
+!talk/examples/
+third_party/
+tools/
+.svn/
