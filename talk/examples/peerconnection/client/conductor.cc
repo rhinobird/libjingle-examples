@@ -35,6 +35,8 @@
 #include "talk/base/logging.h"
 #include "talk/examples/peerconnection/client/defaults.h"
 #include "talk/media/devices/devicemanager.h"
+#include "talk/media/base/videocapturer.h"
+#include "talk/media/base/videorenderer.h"
 
 // Names used for a IceCandidate JSON object.
 const char kCandidateSdpMidName[] = "sdpMid";
@@ -44,7 +46,106 @@ const char kCandidateSdpName[] = "candidate";
 // Names used for a SessionDescription JSON object.
 const char kSessionDescriptionTypeName[] = "type";
 const char kSessionDescriptionSdpName[] = "sdp";
+//AF CODE
 
+class DummyVideoCapturer : public cricket::VideoCapturer {
+  public:
+    DummyVideoCapturer () : cricket::VideoCapturer () {}
+
+    cricket::CaptureState Start(const cricket::VideoFormat& capture_format) {return cricket::CS_RUNNING;}
+    void Stop() {}
+    bool IsRunning() {return true;}
+    bool IsScreencast() const {return true;}
+    bool GetPreferredFourccs(std::vector<uint32>* fourccs) {return true;}
+  };
+
+class DummyVideoRenderer : public webrtc::VideoRendererInterface {
+   public:
+    DummyVideoRenderer(DummyVideoCapturer* main_wnd,
+                  webrtc::VideoTrackInterface* track_to_render);
+    virtual ~DummyVideoRenderer();
+
+    // VideoRendererInterface implementation
+    virtual void SetSize(int width, int height);
+    virtual void RenderFrame(const cricket::VideoFrame* frame);
+
+    const uint8* image() const {
+      return image_.get();
+    }
+
+    int width() const {
+      return width_;
+    }
+
+    int height() const {
+      return height_;
+    }
+
+   protected:
+    talk_base::scoped_array<uint8> image_;
+    int width_;
+    int height_;
+    DummyVideoCapturer* main_wnd_;
+    talk_base::scoped_refptr<webrtc::VideoTrackInterface> rendered_track_;
+  };
+
+DummyVideoRenderer::DummyVideoRenderer(
+    DummyVideoCapturer* main_wnd,
+    webrtc::VideoTrackInterface* track_to_render)
+    : width_(0),
+      height_(0),
+      main_wnd_(main_wnd),
+      rendered_track_(track_to_render) {
+  rendered_track_->AddRenderer(this);
+}
+
+DummyVideoRenderer::~DummyVideoRenderer() {
+  rendered_track_->RemoveRenderer(this);
+}
+
+void DummyVideoRenderer::SetSize(int width, int height) {
+  #if 0
+  gdk_threads_enter();
+  width_ = width;
+  height_ = height;
+  image_.reset(new uint8[width * height * 4]);
+  gdk_threads_leave();
+  #endif
+}
+
+void DummyVideoRenderer::RenderFrame(const cricket::VideoFrame* frame) {
+  #if 0
+  gdk_threads_enter();
+
+  int size = width_ * height_ * 4;
+  // TODO: Convert directly to RGBA
+  frame->ConvertToRgbBuffer(cricket::FOURCC_ARGB,
+                            image_.get(),
+                            size,
+                            width_ * 4);
+  // Convert the B,G,R,A frame to R,G,B,A, which is accepted by GTK.
+  // The 'A' is just padding for GTK, so we can use it as temp.
+  uint8* pix = image_.get();
+  uint8* end = image_.get() + size;
+  while (pix < end) {
+    pix[3] = pix[0];     // Save B to A.
+    pix[0] = pix[2];  // Set Red.
+    pix[2] = pix[3];  // Set Blue.
+    pix[3] = 0xFF;     // Fixed Alpha.
+    pix += 4;
+  }
+
+  gdk_threads_leave();
+
+  g_idle_add(Redraw, main_wnd_);
+  #endif
+  main_wnd_->SignalVideoFrame(main_wnd_, frame);
+}
+
+talk_base::scoped_ptr<DummyVideoRenderer> remote_renderer_;
+DummyVideoCapturer *fake_capt_;
+
+talk_base::scoped_refptr<webrtc::MediaStreamInterface> stream_;
 class DummySetSessionDescriptionObserver
     : public webrtc::SetSessionDescriptionObserver {
  public:
@@ -70,6 +171,7 @@ Conductor::Conductor(PeerConnectionClient* client, MainWindow* main_wnd)
     main_wnd_(main_wnd) {
   client_->RegisterObserver(this);
   main_wnd->RegisterObserver(this);
+  fake_capt_ = new DummyVideoCapturer();
 }
 
 Conductor::~Conductor() {
@@ -110,7 +212,8 @@ bool Conductor::InitializePeerConnection() {
         "CreatePeerConnection failed", true);
     DeletePeerConnection();
   }
-  AddStreams();
+  //EL CLIENTE QUE NO MANDA...
+  //AddStreams();
   return peer_connection_.get() != NULL;
 }
 
@@ -141,12 +244,59 @@ void Conductor::OnError() {
 }
 
 // Called when a remote stream is added
-void Conductor::OnAddStream(webrtc::MediaStreamInterface* stream) {
+//### CONDUCTORS STREAM HANDLER CHANGES TO
+/*void Conductor::OnAddStream(webrtc::MediaStreamInterface* stream) {
   LOG(INFO) << __FUNCTION__ << " " << stream->label();
 
   stream->AddRef();
   main_wnd_->QueueUIThreadCallback(NEW_STREAM_ADDED,
                                    stream);
+}*/
+void Conductor::OnAddStream(webrtc::MediaStreamInterface* stream) {
+  LOG(INFO) << __FUNCTION__ << " " << stream->label();
+  // Create Local Stream
+
+  if (stream_ == NULL)
+    stream_ = peer_connection_factory_->CreateLocalMediaStream(kStreamLabel);
+ 
+LOG(INFO) << "created a " << stream_->label();
+
+  if (stream_->GetAudioTracks().size() == 0)
+  {
+     LOG(INFO) << "HEELLO i can get the audiotracks";
+
+    webrtc::AudioTrackVector audio_tracks = stream->GetAudioTracks();
+    webrtc::VideoTrackVector video_tracks = stream->GetVideoTracks();
+    //add audio
+    //stream_->AddTrack (audio_tracks[0]);
+LOG(INFO) << "HEELLO i can add the audio track!";
+    //stream->AddRef();
+    // make local video track connected with fake capturer
+    // talk_base::scoped_refptr<webrtc::VideoTrackInterface> video_track(
+    //     peer_connection_factory_->CreateVideoTrack(
+    //         kVideoLabel, fake_capt_));
+
+    talk_base::scoped_refptr<webrtc::VideoTrackInterface> video_track(
+          peer_connection_factory_->CreateVideoTrack(
+              kVideoLabel,
+              peer_connection_factory_->CreateVideoSource(fake_capt_,
+                                                          NULL)));
+LOG(INFO) << "created the video track";
+
+    // make local renderer connected with fake capturer
+    remote_renderer_.reset(new DummyVideoRenderer(fake_capt_, video_tracks[0]));
+    stream_->AddTrack (video_track);
+
+    LOG(INFO) << "added the video track!";
+
+    //stream_->AddRef ();
+    peer_connection_->AddStream (stream_, NULL);
+  }
+  else
+  {
+    LOG(INFO) << "there where audio tracks! :S";
+  }
+//MIGHT BE SOME CODE MISSING?
 }
 
 void Conductor::OnRemoveStream(webrtc::MediaStreamInterface* stream) {
